@@ -6,6 +6,7 @@ package ottlfuncs // import "github.com/open-telemetry/opentelemetry-collector-c
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"go.opentelemetry.io/collector/pdata/pcommon"
 
@@ -17,6 +18,17 @@ type ParseKeyValueArguments[K any] struct {
 	Target        ottl.StringGetter[K]
 	Delimiter     ottl.Optional[string]
 	PairDelimiter ottl.Optional[string]
+	// IgnoreMalformedTokens (false by default) causes the parser
+	// to ignore and skip string tokens (a token is a string
+	// separated from other tokens by PairDelimiter) which cannot
+	// be parses as a (non-empty) key and (non-empty) value, that
+	// is string tokens which do not have exactly one Delimiter in
+	// them, with non-empty strings on both sides of the
+	// Delimiter. When set, such malformed tokens will be ignored
+	// and not parsed for a key and value, while other tokens that
+	// are well formed will still yield key-values without the
+	// ParseKeyValue function returning any errors.
+	IgnoreMalformedTokens ottl.Optional[bool]
 }
 
 func NewParseKeyValueFactory[K any]() ottl.Factory[K] {
@@ -30,10 +42,10 @@ func createParseKeyValueFunction[K any](_ ottl.FunctionContext, oArgs ottl.Argum
 		return nil, fmt.Errorf("ParseKeyValueFactory args must be of type *ParseKeyValueArguments[K]")
 	}
 
-	return parseKeyValue[K](args.Target, args.Delimiter, args.PairDelimiter)
+	return parseKeyValue[K](args.Target, args.Delimiter, args.PairDelimiter, args.IgnoreMalformedTokens)
 }
 
-func parseKeyValue[K any](target ottl.StringGetter[K], d ottl.Optional[string], p ottl.Optional[string]) (ottl.ExprFunc[K], error) {
+func parseKeyValue[K any](target ottl.StringGetter[K], d ottl.Optional[string], p ottl.Optional[string], ignoreMalformedTokens ottl.Optional[bool]) (ottl.ExprFunc[K], error) {
 	delimiter := "="
 	if !d.IsEmpty() {
 		if d.Get() == "" {
@@ -67,6 +79,23 @@ func parseKeyValue[K any](target ottl.StringGetter[K], d ottl.Optional[string], 
 		pairs, err := parseutils.SplitString(source, pairDelimiter)
 		if err != nil {
 			return nil, fmt.Errorf("splitting source %q into pairs failed: %w", source, err)
+		}
+
+		imt := false
+		if !ignoreMalformedTokens.IsEmpty() {
+			imt = ignoreMalformedTokens.Get()
+		}
+		validPairs := make([]string, 0, len(pairs))
+		if imt {
+			for _, pv := range pairs {
+				if n := strings.Count(pv, delimiter); n == 1 {
+					if before, after, _ := strings.Cut(pv, delimiter); len(before) > 0 && len(after) > 0 {
+						validPairs = append(validPairs, pv)
+					}
+				}
+			}
+
+			pairs = validPairs
 		}
 
 		parsed, err := parseutils.ParseKeyValuePairs(pairs, delimiter)
